@@ -22,9 +22,8 @@ button.on{background:var(--btn-on)}
 <div id="bar">
   <button id="bGame" class="on">遊戲視圖</button>
   <button id="bFtle">FTLE 色圖</button>
-  <button id="bTar">隱藏編號</button>
-  <button id="bMode">模式：選擇題</button>
   <button id="bNew">新關卡</button>
+  <button id="bLang">EN</button>
 </div>
 <div id="msg"></div>
 <script>
@@ -32,10 +31,10 @@ const cv=document.getElementById('c'),ctx=cv.getContext('2d'),msgEl=document.get
 let MAX_STEPS=140,VM=1;const NT=5,RES=160;
 let W,H,dpr,gridSize,offX,offY,nodeR;
 let phX,phY,fX,fY,dX,dY;
-let targets=[],finals=[],targetIndex=0,finalP=[],simP=[],simT=0;
-let state='GUESSING',view='GAME',showT=true,wrong=new Set();
-let finalS=[],pathPts=[],nearPt=null,animT0=0,frameN=0,mode='CHOICE',guess=null,pEnd=null,rounds=0,total=0,lastPct=0;
-let ftleCv=document.createElement('canvas'),ftleMin=0,ftleMax=1;
+let targets=[],finals=[],targetIndex=0,simP=[],simT=0;
+let state='GUESSING',view='GAME';
+let pathPts=[],nearPt=null,animT0=0,frameN=0,guess=null,pEnd=null,rounds=0,total=0,lastPct=0;
+let ftleCv=document.createElement('canvas'),ftleMin=0,ftleMax=1,ftleGrid=null;
 
 const rnd=Math.random;
 /* 地圖範圍：東經118.2–128.2°、北緯19.8–29.8°（正方形）。LAND=coasts.mat 簡化後的海岸多邊形；FLD=ASCAT Ekman流 2025-08-12（缺值已補），單位 mm/s */
@@ -115,9 +114,11 @@ function ftleColor(t){
   else{r=255;g=255*(1-(t-.75)/.25);b=0}
   return [r|0,g|0,b|0];
 }
+const BANDS=8;
+function ftleBand(t){t=Math.max(0,Math.min(1,t));return ftleColor(Math.min(BANDS-1,Math.floor(t*BANDS))/(BANDS-1))}
 function genFTLE(){
   // 每格放1顆粒子積分T步，再用相鄰格終點的差分求流映射的梯度，取最大奇異值 → FTLE
-  const step=gridSize/RES,T=(mode==='PREDICT'?90:45),n=RES*RES;
+  const step=gridSize/RES,T=90,n=RES*RES;
   const fx=new Float32Array(n),fy=new Float32Array(n),ld=new Uint8Array(n);
   for(let j=0;j<RES;j++)for(let i=0;i<RES;i++){
     const k=j*RES+i;let x=offX+(i+.5)*step,y=offY+(j+.5)*step;
@@ -128,22 +129,38 @@ function genFTLE(){
   const val=new Float32Array(n).fill(NaN),ok=[];
   for(let j=0;j<RES;j++)for(let i=0;i<RES;i++){
     const k=j*RES+i;if(ld[k])continue;
-    const i0=(i>0&&!ld[k-1])?i-1:i,i1=(i<RES-1&&!ld[k+1])?i+1:i,j0=(j>0&&!ld[k-RES])?j-1:j,j1=(j<RES-1&&!ld[k+RES])?j+1:j;
+    const h=2,i0=(i>=h&&!ld[k-h])?i-h:i,i1=(i<RES-h&&!ld[k+h])?i+h:i,j0=(j>=h&&!ld[k-h*RES])?j-h:j,j1=(j<RES-h&&!ld[k+h*RES])?j+h:j;
     if(i0===i1||j0===j1)continue;
     const a=j*RES+i0,b=j*RES+i1,c=j0*RES+i,d=j1*RES+i,dx=(i1-i0)*step,dy=(j1-j0)*step;
     const f11=(fx[b]-fx[a])/dx,f21=(fy[b]-fy[a])/dx,f12=(fx[d]-fx[c])/dy,f22=(fy[d]-fy[c])/dy;
     const A=f11*f11+f21*f21,D=f12*f12+f22*f22,B=f11*f12+f21*f22;
     const lam=(A+D)/2+Math.sqrt(((A-D)/2)**2+B*B);
-    val[k]=Math.log(Math.max(lam,1e-6))/(2*T);ok.push(val[k]);
+    val[k]=Math.max(0,Math.log(Math.max(lam,1e-6))/(2*T));  // 負值一律截為 0
   }
-  ok.sort((p,q)=>p-q);  // 以第3~97百分位拉伸色階，避免少數極端值讓整張圖偏暗
-  const lo=ok.length?ok[Math.floor(ok.length*.03)]:0,hi=ok.length?ok[Math.floor(ok.length*.97)]:.01;
-  ftleMin=lo;ftleMax=hi>lo?hi:lo+.01;
+  for(let pass=0;pass<2;pass++){  // 3x3 高斯平滑（略過陸地/缺值），讓脊線連成一條、去掉細碎雜訊
+    const o=new Float32Array(n).fill(NaN);
+    for(let j=0;j<RES;j++)for(let i=0;i<RES;i++){
+      const k=j*RES+i;if(val[k]!==val[k])continue;
+      let sum=0,w=0;
+      for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){
+        const ii=i+di,jj=j+dj;if(ii<0||jj<0||ii>=RES||jj>=RES)continue;
+        const v=val[jj*RES+ii];if(v!==v)continue;
+        const ww=(di?1:2)*(dj?1:2);sum+=v*ww;w+=ww;
+      }
+      o[k]=sum/w;
+    }
+    val.set(o);
+  }
+  ftleGrid=val;
+  for(let k=0;k<n;k++)if(val[k]===val[k])ok.push(val[k]);
+  ok.sort((p,q)=>p-q);  // 色階固定從 0 開始，上限取第97百分位，避免少數極端值讓整張圖偏暗
+  const hi=ok.length?ok[Math.floor(ok.length*.97)]:.01;
+  ftleMin=0;ftleMax=hi>0?hi:.01;
   ftleCv.width=ftleCv.height=RES;
   const fc=ftleCv.getContext('2d'),img=fc.createImageData(RES,RES);
   for(let k=0;k<n;k++){
     const v=val[k];if(v!==v)continue;
-    const c=ftleColor((v-ftleMin)/(ftleMax-ftleMin));
+    const c=ftleBand((v-ftleMin)/(ftleMax-ftleMin));
     img.data[k*4]=c[0];img.data[k*4+1]=c[1];img.data[k*4+2]=c[2];img.data[k*4+3]=255;
   }
   fc.putImageData(img,0,0);
@@ -157,50 +174,52 @@ function layout(){
   offX=(W-gridSize)/2-(W>500?20:0);offY=top+(H-top-bottom-gridSize)/2;
   nodeR=gridSize*.045;buildLand();
 }
+const I18N={
+ zh:{title:'洋流粒子遊戲 · FTLE',game:'遊戲視圖',ftle:'FTLE 色圖',newL:'新關卡',langBtn:'EN',
+  mS:'起',mE:'終',mG:'猜',
+  startP:'綠色起點的粒子漂流後會到哪裡？點地圖上你認為粒子會經過的位置（虛線圈內不計分，可先看 FTLE 色圖）',
+  land:'那裡是陸地，請點海上的位置',tooclose:'太靠近起點（150 km 內不計分），請點更遠的位置',drifting:'粒子漂流中…',
+  result:(p,km)=>`符合度 ${p}%（離路徑最近 ${km} km）｜點任意處下一題`},
+ en:{title:'Ocean Particle Game · FTLE',game:'Game view',ftle:'FTLE map',newL:'New level',langBtn:'中文',
+  mS:'S',mE:'E',mG:'G',
+  startP:'Where will the particle from the green start drift? Tap a spot you think it will pass (no score inside the dashed circle; try the FTLE map first).',
+  land:'That is land. Please tap a spot at sea.',tooclose:'Too close to the start (no score within 150 km). Tap farther away.',drifting:'Particle drifting…',
+  result:(p,km)=>`Match ${p}% (${km} km from the path) | Tap anywhere for the next one`}};
+let lang='zh',curSay=null;
+const tr=(k,...a)=>{const v=I18N[lang][k];return typeof v==='function'?v(...a):v};
+function say(k,c,...a){curSay=[k,c,a];msgEl.textContent=tr(k,...a);msgEl.style.color=c||'#fff'}
 function setMsg(t,c){msgEl.textContent=t;msgEl.style.color=c||'#fff'}
 
 /* 落點預測選題：排除繞圈、太快碰壁/停滯、離起點太近的路徑（100km = gridSize/SPAN 像素） */
+const HI_T=.75,HI_MAX=8;  // 高FTLE＝色階最高兩階（橘、紅）；整條路徑最多容許約 8 步落在其中（貼邊擦過）
+function ftleHi(x,y){
+  if(!ftleGrid)return false;
+  const i=Math.floor((x-offX)/gridSize*RES),j=Math.floor((y-offY)/gridSize*RES);
+  if(i<0||j<0||i>=RES||j>=RES)return false;
+  const v=ftleGrid[j*RES+i];return v===v&&(v-ftleMin)/(ftleMax-ftleMin)>=HI_T;
+}
 function pathStats(sx,sy){
-  let x=sx,y=sy,len=0,mx=0,lastMove=0;const N=MAX_STEPS,u=gridSize/SPAN;
-  for(let k=0;k<=N;k++){const q=mv(x,y),d=Math.hypot(q[0]-x,q[1]-y);len+=d;if(d>.15)lastMove=k;x=q[0];y=q[1];mx=Math.max(mx,Math.hypot(x-sx,y-sy))}
+  let x=sx,y=sy,len=0,mx=0,lastMove=0,hi=0;const N=MAX_STEPS,u=gridSize/SPAN;
+  for(let k=0;k<=N;k++){const q=mv(x,y),d=Math.hypot(q[0]-x,q[1]-y);len+=d;if(d>.15)lastMove=k;x=q[0];y=q[1];mx=Math.max(mx,Math.hypot(x-sx,y-sy));if(ftleHi(x,y))hi++}
   const net=Math.hypot(x-sx,y-sy),ok=mx>=3.5*u&&net>=2.5*u&&net>=.6*len&&lastMove>=.9*N;
-  return {end:[x,y],net,ok,score:(ok?1e6:0)+net};
+  return {end:[x,y],net,ok,hi,clean:hi<=HI_MAX,score:(ok?1e6:0)+(hi<=HI_MAX?5e5:0)-hi*100+net};
 }
 function initLevel(){
-  VM=1;MAX_STEPS=mode==='PREDICT'?480:140;  // 兩模式流場相同（箭頭一致）；落點預測用更多步數漂得更遠
+  VM=1;MAX_STEPS=480;
   randomizeFlow();genFTLE();
-  targets=[];finals=[];let tries=0,minEnd=gridSize*.22;const minStart=nodeR*2.4;
-  while(targets.length<NT){
-    tries++;
+  state='GUESSING';simP=[];simT=0;view='GAME';syncBtns();
+  animT0=0;guess=null;pEnd=null;targetIndex=0;
+  let best=null;
+  for(let n=0;n<1500;n++){
     const sx=offX+nodeR+rnd()*(gridSize-nodeR*2),sy=offY+nodeR+rnd()*(gridSize-nodeR*2);
-    let ok=seaSafe(sx,sy,nodeR);const e=ok?simulate(sx,sy):[0,0];
-    for(let i=0;i<targets.length;i++){
-      if(Math.hypot(sx-targets[i][0],sy-targets[i][1])<minStart||Math.hypot(e[0]-finals[i][0],e[1]-finals[i][1])<minEnd){ok=false;break}
-    }
-    if(ok){targets.push([sx,sy]);finals.push(e);tries=0}
-    if(tries>120){minEnd*=.94;tries=0;
-      if(minEnd<gridSize*.05){randomizeFlow();genFTLE();targets=[];finals=[];minEnd=gridSize*.22}}
+    if(!seaSafe(sx,sy,nodeR))continue;
+    const m=pathStats(sx,sy);
+    if(!best||m.score>best.score)best={sx,sy,end:m.end,score:m.score};
+    if(m.ok&&m.clean)break;
   }
-  targetIndex=Math.floor(rnd()*NT);
-  const s=targets[targetIndex];finalP=[];finalS=[];
-  for(let i=0;i<55;i++){
-    const a=rnd()*Math.PI*2,r=rnd()*nodeR*.45;
-    const q=[s[0]+Math.cos(a)*r,s[1]+Math.sin(a)*r];finalS.push(q);finalP.push(simulate(q[0],q[1]));
-  }
-  state='GUESSING';simP=[];simT=0;wrong=new Set();showT=true;view='GAME';syncBtns();
-  animT0=0;guess=null;pEnd=null;if(mode==='PREDICT'){
-    let best=null;
-    for(let tr=0;tr<800;tr++){
-      const sx=offX+nodeR+rnd()*(gridSize-nodeR*2),sy=offY+nodeR+rnd()*(gridSize-nodeR*2);
-      if(!seaSafe(sx,sy,nodeR))continue;
-      const m=pathStats(sx,sy);
-      if(!best||m.score>best.score)best={sx,sy,end:m.end,score:m.score};
-      if(m.ok)break;
-    }
-    if(best){targets[targetIndex]=[best.sx,best.sy];finals[targetIndex]=best.end;pEnd=best.end}else pEnd=finals[targetIndex];
-    finalP=[];
-  }
-  setMsg(mode==='PREDICT'?'綠色起點的粒子漂流後會到哪裡？點地圖上你認為粒子會經過的位置（虛線圈內不計分，可先看 FTLE 色圖）':'【'+season+'】青色粒子是某個編號出發後的終點，猜猜是哪一個？');
+  if(!best){const sx=offX+gridSize/2,sy=offY+gridSize/2;best={sx,sy,end:simulate(sx,sy)}}
+  targets=[[best.sx,best.sy]];finals=[best.end];pEnd=best.end;
+  say('startP',null);
 }
 
 function draw(){
@@ -209,22 +228,21 @@ function draw(){
   if(view==='FTLE'){
     ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
     ctx.drawImage(ftleCv,offX,offY,gridSize,gridSize);
+    drawArrows(true);
     drawBar();
   }else{
-    drawArrows();
-    ctx.fillStyle='rgba(0,245,255,.9)';ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=1;
-    for(const p of finalP){ctx.beginPath();ctx.arc(p[0],p[1],3.5,0,7);ctx.fill();ctx.stroke()}
+    drawArrows(false);
   }
   drawLand();
-  if(showT)drawNodes();
+  drawPredict();
   if(state==='ANIMATING'){
-    if(!animT0)animT0=performance.now();const want=Math.floor((performance.now()-animT0)/(mode==='PREDICT'?3000:3000)*(MAX_STEPS+1)),multi=simP.length>1;  // 每2幀走一步：放慢並畫出軌跡
+    if(!animT0)animT0=performance.now();const want=Math.floor((performance.now()-animT0)/3000*(MAX_STEPS+1)),multi=simP.length>1;  // 每2幀走一步：放慢並畫出軌跡
     ctx.lineJoin='round';
     for(const p of simP){
       if(!p.t)p.t=[[p[0],p[1]]];
-      ctx.strokeStyle=multi?'rgba(255,215,0,.3)':'rgba(255,215,0,.9)';ctx.lineWidth=multi?1:3;
+      ctx.strokeStyle=multi?'rgba(255,60,230,.35)':'rgba(255,60,230,.95)';ctx.lineWidth=multi?1:3.5;
       ctx.beginPath();p.t.forEach((q,i)=>i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]));ctx.stroke();
-      ctx.fillStyle='rgba(255,215,0,.95)';ctx.beginPath();ctx.arc(p[0],p[1],multi?3.5:5.5,0,7);ctx.fill();
+      ctx.fillStyle='rgba(255,60,230,1)';ctx.beginPath();ctx.arc(p[0],p[1],multi?3.5:5.5,0,7);ctx.fill();ctx.strokeStyle='rgba(255,255,255,.9)';ctx.lineWidth=1.2;ctx.stroke();
     }
     while(simT<want&&simT<=MAX_STEPS){for(const p of simP){[p[0],p[1]]=mv(p[0],p[1]);p.t.push([p[0],p[1]])}simT++;if(simT===MAX_STEPS+1)endMsg()}
   }
@@ -233,15 +251,15 @@ function draw(){
 function drawBar(){
   const bw=14,bh=gridSize*.65,bx=offX+gridSize+12,by=offY+(gridSize-bh)/2;
   for(let k=0;k<bh;k+=2){
-    const c=ftleColor(1-k/bh);ctx.fillStyle=`rgb(${c})`;ctx.fillRect(bx,by+k,bw,2);
+    const c=ftleBand(1-k/bh);ctx.fillStyle=`rgb(${c})`;ctx.fillRect(bx,by+k,bw,2);
   }
   ctx.strokeStyle='rgba(255,255,255,.5)';ctx.strokeRect(bx,by,bw,bh);
   ctx.fillStyle='#fff';ctx.font='11px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';
   ctx.fillText(ftleMax.toFixed(3),bx+bw+4,by);ctx.fillText(((ftleMin+ftleMax)/2).toFixed(3),bx+bw+4,by+bh/2);ctx.fillText(ftleMin.toFixed(3),bx+bw+4,by+bh);
 }
-function drawArrows(){
+function drawArrows(onFtle){
   const sp=gridSize/27;
-  ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=1.2;
+  ctx.strokeStyle=onFtle?'rgba(0,0,0,.9)':'rgba(255,255,255,.4)';ctx.lineWidth=1.2;
   for(let x=offX+sp/2;x<offX+gridSize;x+=sp)for(let y=offY+sp/2;y<offY+gridSize;y+=sp){
     if(isLand(x,y))continue;
     const v=flow(x,y),len=Math.hypot(v[0],v[1])*sp*.24;
@@ -253,72 +271,49 @@ function drawArrows(){
 function drawPredict(){
   const s=targets[targetIndex];
   ctx.textAlign='center';ctx.textBaseline='middle';
-  const mark=(p,col,t)=>{ctx.fillStyle=col;ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(p[0],p[1],nodeR*.7,0,7);ctx.fill();ctx.stroke();ctx.fillStyle='#fff';ctx.font=`bold ${nodeR*.7}px system-ui`;ctx.fillText(t,p[0],p[1]+1)};
+  const mark=(p,col,t)=>{ctx.fillStyle=col;ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(p[0],p[1],nodeR*.42,0,7);ctx.fill();ctx.stroke();ctx.fillStyle='#fff';ctx.font=`bold ${nodeR*.5}px system-ui`;ctx.fillText(t,p[0],p[1]+1)};
   if(guess&&state==='ANIMATING'&&simT>MAX_STEPS){
-    ctx.setLineDash([6,5]);ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(guess[0],guess[1]);ctx.lineTo(nearPt[0],nearPt[1]);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(nearPt[0],nearPt[1],4.5,0,7);ctx.fill();
-    mark(pEnd,'rgba(0,170,200,.95)','終');
+    ctx.setLineDash([6,5]);ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(guess[0],guess[1]);ctx.lineTo(nearPt[0],nearPt[1]);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(nearPt[0],nearPt[1],3,0,7);ctx.fill();
+    mark(pEnd,'rgba(0,170,200,.95)',tr('mE'));
   }
-  if(guess)mark(guess,'rgba(220,80,80,.95)','猜');
-  if(state==='GUESSING'){ctx.setLineDash([5,5]);ctx.strokeStyle='rgba(255,255,255,.45)';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(s[0],s[1],2*gridSize/SPAN,0,7);ctx.stroke();ctx.setLineDash([])}
-  mark(s,'rgba(40,160,80,.95)','起');
+  if(guess)mark(guess,'rgba(220,80,80,.95)',tr('mG'));
+  if(state==='GUESSING'){ctx.setLineDash([5,5]);ctx.strokeStyle=view==='FTLE'?'rgba(0,0,0,.9)':'rgba(255,255,255,.45)';ctx.lineWidth=view==='FTLE'?2:1.5;ctx.beginPath();ctx.arc(s[0],s[1],1.5*gridSize/SPAN,0,7);ctx.stroke();ctx.setLineDash([])}
+  mark(s,'rgba(40,160,80,.95)',tr('mS'));
 }
 function endMsg(){
-  if(mode==='PREDICT'&&guess){
-    const km=Math.round(Math.hypot(guess[0]-nearPt[0],guess[1]-nearPt[1])/gridSize*SPAN*100);
-    setMsg(`符合度 ${lastPct}%（離路徑最近 ${km} km）｜點任意處下一題`,lastPct>=70?'#7dff9b':lastPct>=40?'#ffe08a':'#ff8a8a');
-  }else setMsg('點擊畫面任意處 進入全新關卡');
+  if(!guess)return;
+  const km=Math.round(Math.hypot(guess[0]-nearPt[0],guess[1]-nearPt[1])/gridSize*SPAN*100);
+  say('result',lastPct>=70?'#7dff9b':lastPct>=40?'#ffe08a':'#ff8a8a',lastPct,km);
 }
-function drawNodes(){
-  if(mode==='PREDICT'){drawPredict();return}
-  ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`bold ${nodeR*.95}px system-ui`;
-  targets.forEach((p,i)=>{
-    const isW=wrong.has(i),isOK=state==='ANIMATING'&&i===targetIndex;
-    ctx.fillStyle=isOK?'rgba(40,160,80,.85)':isW?'rgba(160,40,50,.8)':'rgba(18,25,42,.82)';
-    ctx.strokeStyle='rgba(255,255,255,.85)';ctx.lineWidth=2;
-    ctx.beginPath();ctx.arc(p[0],p[1],nodeR,0,7);ctx.fill();ctx.stroke();
-    ctx.fillStyle='#fff';ctx.fillText(i+1,p[0],p[1]+1);
-  });
-}
-
 function pick(x,y){
   if(state==='ANIMATING'){if(simT>MAX_STEPS)initLevel();return}
-  if(mode==='PREDICT'){
+  {
     if(x<offX||x>offX+gridSize||y<offY||y>offY+gridSize)return;
-    if(isLand(x,y)){setMsg('那裡是陸地，請點海上的位置','#ff8a8a');return}
-    {const s1=targets[targetIndex];if(Math.hypot(x-s1[0],y-s1[1])<2*gridSize/SPAN){setMsg('太靠近起點（200 km 內不計分），請點更遠的位置','#ff8a8a');return}}
+    if(isLand(x,y)){say('land','#ff8a8a');return}
+    {const s1=targets[targetIndex];if(Math.hypot(x-s1[0],y-s1[1])<1.5*gridSize/SPAN){say('tooclose','#ff8a8a');return}}
     guess=[x,y];
     {const s0=targets[targetIndex];let a=[s0[0],s0[1]];pathPts=[a];for(let k=0;k<=MAX_STEPS;k++){a=mv(a[0],a[1]);pathPts.push(a)}}
     let d=1e9;nearPt=pathPts[0];  // 與整條漂流路徑（線段）的最近距離
     for(let k=1;k<pathPts.length;k++){const A=pathPts[k-1],B=pathPts[k],dx=B[0]-A[0],dy=B[1]-A[1],L2=dx*dx+dy*dy;let t=L2?((x-A[0])*dx+(y-A[1])*dy)/L2:0;t=Math.max(0,Math.min(1,t));const qx=A[0]+t*dx,qy=A[1]+t*dy,dd=Math.hypot(x-qx,y-qy);if(dd<d){d=dd;nearPt=[qx,qy]}}
     const dkm=d/gridSize*SPAN*100;lastPct=Math.round((P=>{for(let i=1;i<P.length;i++)if(dkm<=P[i][0])return P[i-1][1]+(P[i][1]-P[i-1][1])*(dkm-P[i-1][0])/(P[i][0]-P[i-1][0]);return 15})([[0,100],[15,95],[30,90],[100,85],[200,80],[700,30],[1500,15]]));  // 分段線性：距離km→符合度%
     state='ANIMATING';simT=0;view='GAME';syncBtns();
-    const s=targets[targetIndex];simP=[[s[0],s[1]]];setMsg('粒子漂流中…');return;
-  }
-  if(!showT)return;
-  for(let i=0;i<targets.length;i++){
-    if(Math.hypot(x-targets[i][0],y-targets[i][1])<=nodeR*1.2){
-      if(wrong.has(i))return;
-      if(i===targetIndex){
-        state='ANIMATING';simT=0;view='GAME';syncBtns();
-        simP=finalS.map(q=>[q[0],q[1]]);  // 與青色答案粒子同起點，終點完全重合
-        setMsg(`答對了！就是 ${i+1} 號，看金色粒子流動`,'#7dff9b');
-      }else{
-        wrong.add(i);setMsg(`${i+1} 號不對，再想想（試試 FTLE 色圖）`,'#ff8a8a');
-      }
-      return;
-    }
+    const s=targets[targetIndex];simP=[[s[0],s[1]]];say('drifting');return;
   }
 }
 cv.addEventListener('pointerdown',e=>{const r=cv.getBoundingClientRect();pick(e.clientX-r.left,e.clientY-r.top)});
 
-const bG=document.getElementById('bGame'),bF=document.getElementById('bFtle'),bT=document.getElementById('bTar');
-function syncBtns(){bG.classList.toggle('on',view==='GAME');bF.classList.toggle('on',view==='FTLE');bT.textContent=showT?'隱藏編號':'顯示編號'}
+const bG=document.getElementById('bGame'),bF=document.getElementById('bFtle');
+function syncBtns(){bG.classList.toggle('on',view==='GAME');bF.classList.toggle('on',view==='FTLE')}
 bG.onclick=()=>{view='GAME';syncBtns()};
 bF.onclick=()=>{view='FTLE';syncBtns()};
-bT.onclick=()=>{showT=!showT;syncBtns()};
-document.getElementById('bNew').onclick=()=>initLevel();
-const bM=document.getElementById('bMode');
-bM.onclick=()=>{mode=mode==='CHOICE'?'PREDICT':'CHOICE';bM.textContent=mode==='CHOICE'?'模式：選擇題':'模式：落點預測';bT.style.display=mode==='PREDICT'?'none':'';rounds=0;total=0;initLevel()};
+const bL=document.getElementById('bLang'),bN=document.getElementById('bNew');
+bN.onclick=()=>initLevel();
+function applyLang(){
+  document.documentElement.lang=lang==='zh'?'zh-Hant':'en';document.title=tr('title');
+  bG.textContent=tr('game');bF.textContent=tr('ftle');bN.textContent=tr('newL');bL.textContent=tr('langBtn');syncBtns();
+  if(curSay)say(curSay[0],curSay[1],...curSay[2]);
+}
+bL.onclick=()=>{lang=lang==='zh'?'en':'zh';applyLang()};
 let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{layout();initLevel()},250)});
 layout();initLevel();draw();
 </script>
