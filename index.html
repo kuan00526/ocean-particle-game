@@ -14,7 +14,17 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 #bar{position:absolute;left:0;right:0;top:env(safe-area-inset-top,0px);display:flex;gap:8px;justify-content:center;padding:10px;flex-wrap:wrap;z-index:2}
 button{background:var(--btn);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:9px 14px;font:inherit;font-size:14px;cursor:pointer}
 button.on{background:var(--btn-on)}
-#cnt{position:absolute;right:12px;top:calc(env(safe-area-inset-top,0px) + 58px);font-size:13px;opacity:.75;z-index:2;pointer-events:none;text-align:right}
+#cnt{position:absolute;right:12px;top:calc(env(safe-area-inset-top,0px) + 58px);font-size:13px;opacity:.85;z-index:3;cursor:pointer;text-align:right;display:none}
+#stats{position:absolute;left:12px;top:calc(env(safe-area-inset-top,0px) + 70px);width:230px;background:rgba(10,16,26,.85);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;z-index:3;font-size:13px;line-height:1.3;display:none}
+#stats.float{left:auto;right:12px;top:calc(env(safe-area-inset-top,0px) + 84px)}
+#stats h4{margin:0 0 2px;font-size:13px;font-weight:600}
+#stats .tot{margin:0 0 8px;opacity:.85}
+#stats .row{display:grid;grid-template-columns:62px 1fr 30px;gap:6px;align-items:center;margin:3px 0;padding:2px 4px;border-radius:6px}
+#stats .row.hit{outline:1px solid #fff;background:#ffffff1f}
+#stats .bar{height:8px;border-radius:4px;background:#ffffff14;overflow:hidden}
+#stats .bar i{display:block;height:100%;border-radius:4px}
+#stats .n{text-align:right;opacity:.9}
+#stats .st{margin-top:6px;font-size:11px;opacity:.6}
 #msg{position:absolute;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);text-align:center;font-size:clamp(15px,2.6vw,20px);padding:0 12px;z-index:2;pointer-events:none}
 </style>
 </head>
@@ -27,6 +37,7 @@ button.on{background:var(--btn-on)}
   <button id="bLang">EN</button>
 </div>
 <div id="cnt"></div>
+<div id="stats"></div>
 <div id="msg"></div>
 <script>
 const cv=document.getElementById('c'),ctx=cv.getContext('2d'),msgEl=document.getElementById('msg');
@@ -38,14 +49,40 @@ let state='GUESSING',view='GAME';
 let pathPts=[],nearPt=null,animT0=0,frameN=0,guess=null,pEnd=null,rounds=0,total=0,lastPct=0;
 let ftleCv=document.createElement('canvas'),ftleMin=0,ftleMax=1,ftleGrid=null;
 
-/* 互動次數：從 COUNT_BASE 起算，每送出一次有效的落點預測 +1。
-   ※ 目前只存在「這個瀏覽器」的 localStorage，不是所有玩家的總數；要全站總數需另接後端（如 GoatCounter）。 */
-const COUNT_BASE=803;
-let plays=COUNT_BASE;
-try{const v=parseInt(localStorage.getItem('ocean_plays'),10);if(v>=COUNT_BASE)plays=v}catch(e){}
-const cntEl=document.getElementById('cnt');
-function showCount(){cntEl.textContent=(lang==='zh'?'互動次數 ':'Plays ')+plays}
-function bumpCount(){plays++;try{localStorage.setItem('ocean_plays',plays)}catch(e){}showCount()}
+/* 互動次數與符合度級距（全站共用）：顯示值 = SEED（初始 803）+ 雲端計數器。
+   每送出一次有效預測，就對該級距的雲端計數器 +1（Abacus 免註冊計數 API）；每 30 秒重新讀取，看到其他玩家的次數。 */
+const SEED=[11,131,172,379,86,21,3];   // 100% | 99–95 | 94–90 | 89–80 | 79–70 | 69–50 | 49以下
+const TIER_COL=['#7dff9b','#a6f06a','#d9ea6a','#ffe08a','#ffbd6b','#ff9a6b','#ff6b6b'];
+const TIER_LB=['100%','99–95%','94–90%','89–80%','79–70%','69–50%'];
+const STAT_T={zh:{title:'符合度級距',total:'總互動次數',lt:'49% 以下',on:'全站即時統計',off:'離線：目前只顯示本機數字',wait:'連線中…'},en:{title:'Score tiers',total:'Total plays',lt:'≤49%',on:'Live, all players',off:'Offline: local numbers only',wait:'Connecting…'}};
+const API='https://abacus.jasoncameron.dev',NS='ocean-particle-game-kuan00526';
+let remote=new Array(7).fill(0),netOK=null,hitIdx=-1,statsOpen=false;
+const cntEl=document.getElementById('cnt'),statsEl=document.getElementById('stats');
+const tierOf=p=>p>=100?0:p>=95?1:p>=90?2:p>=80?3:p>=70?4:p>=50?5:6;
+const apiGet=i=>fetch(API+'/get/'+NS+'/t'+i).then(r=>r.ok?r.json():r.status===404?{value:0}:Promise.reject()).then(j=>+j.value||0);  // 計數器還不存在(404)視為 0
+function refreshRemote(){
+  Promise.all([0,1,2,3,4,5,6].map(apiGet)).then(a=>{remote=a.map((v,i)=>Math.max(v,remote[i]));netOK=true;showCount()}).catch(()=>{netOK=false;showCount()});
+}
+function showCount(){
+  const T=STAT_T[lang],tiers=SEED.map((v,i)=>v+remote[i]),tot=tiers.reduce((a,b)=>a+b,0),mx=Math.max(...tiers,1);
+  cntEl.textContent=T.total+' '+tot+(statsEl.className==='float'?(statsOpen?' ▴':' ▾'):'');
+  statsEl.innerHTML='<h4>'+T.title+'</h4><div class="tot">'+T.total+'：'+tot+'</div>'+
+    tiers.map((n,i)=>'<div class="row'+(i===hitIdx?' hit':'')+'"><span>'+(i<6?TIER_LB[i]:T.lt)+'</span><span class="bar"><i style="width:'+(n/mx*100)+'%;background:'+TIER_COL[i]+'"></i></span><span class="n">'+n+'</span></div>').join('')+
+    '<div class="st">'+(netOK===null?T.wait:netOK?T.on:T.off)+'</div>';
+}
+function bumpCount(i){
+  remote[i]++;hitIdx=i;showCount();  // 先在畫面上 +1，再通知雲端
+  fetch(API+'/hit/'+NS+'/t'+i).then(r=>r.ok?r.json():Promise.reject()).then(j=>{remote[i]=Math.max(remote[i],+j.value||0);netOK=true;showCount()}).catch(()=>{netOK=false;showCount()});
+}
+function positionStats(){  // 左側空白夠寬就固定在左邊；太窄（手機直立）改成點右上角數字展開
+  const dock=offX>=250;
+  statsEl.className=dock?'dock':'float';
+  statsEl.style.width=dock?Math.min(230,offX-24)+'px':'230px';
+  statsEl.style.display=(dock||statsOpen)?'block':'none';
+  cntEl.style.display=dock?'none':'block';
+  showCount();
+}
+cntEl.onclick=()=>{statsOpen=!statsOpen;positionStats()};
 
 const rnd=Math.random;
 /* 地圖範圍：東經118.2–128.2°、北緯19.8–29.8°（正方形）。LAND=coasts.mat 簡化後的海岸多邊形；FLD=ASCAT Ekman流 2025-08-12（缺值已補），單位 mm/s */
@@ -183,7 +220,7 @@ function layout(){
   const top=70,bottom=60,side=W>500?90:50;
   gridSize=Math.max(200,Math.min(W-side,H-top-bottom));
   offX=(W-gridSize)/2-(W>500?20:0);offY=top+(H-top-bottom-gridSize)/2;
-  nodeR=gridSize*.045;buildLand();
+  nodeR=gridSize*.045;buildLand();positionStats();
 }
 const I18N={
  zh:{title:'洋流粒子遊戲 · FTLE',game:'遊戲視圖',ftle:'FTLE 色圖',newL:'新關卡',langBtn:'EN',
@@ -230,7 +267,7 @@ function initLevel(){
   }
   if(!best){const sx=offX+gridSize/2,sy=offY+gridSize/2;best={sx,sy,end:simulate(sx,sy)}}
   targets=[[best.sx,best.sy]];finals=[best.end];pEnd=best.end;
-  say('startP',null);
+  say('startP',null);hitIdx=-1;showCount();
 }
 
 function draw(){
@@ -307,7 +344,7 @@ function pick(x,y){
     let d=1e9;nearPt=pathPts[0];  // 與整條漂流路徑（線段）的最近距離
     for(let k=1;k<pathPts.length;k++){const A=pathPts[k-1],B=pathPts[k],dx=B[0]-A[0],dy=B[1]-A[1],L2=dx*dx+dy*dy;let t=L2?((x-A[0])*dx+(y-A[1])*dy)/L2:0;t=Math.max(0,Math.min(1,t));const qx=A[0]+t*dx,qy=A[1]+t*dy,dd=Math.hypot(x-qx,y-qy);if(dd<d){d=dd;nearPt=[qx,qy]}}
     const dkm=d/gridSize*SPAN*100;lastPct=Math.round((P=>{for(let i=1;i<P.length;i++)if(dkm<=P[i][0])return P[i-1][1]+(P[i][1]-P[i-1][1])*(dkm-P[i-1][0])/(P[i][0]-P[i-1][0]);return 15})([[0,100],[15,95],[30,90],[100,85],[200,80],[700,30],[1500,15]]));  // 分段線性：距離km→符合度%
-    state='ANIMATING';simT=0;view='GAME';syncBtns();bumpCount();
+    state='ANIMATING';simT=0;view='GAME';syncBtns();bumpCount(tierOf(lastPct));
     const s=targets[targetIndex];simP=[[s[0],s[1]]];say('drifting');return;
   }
 }
@@ -326,7 +363,7 @@ function applyLang(){
 }
 bL.onclick=()=>{lang=lang==='zh'?'en':'zh';applyLang()};
 let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{layout();initLevel()},250)});
-layout();initLevel();showCount();draw();
+layout();initLevel();showCount();refreshRemote();setInterval(refreshRemote,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshRemote()});draw();
 </script>
 </body>
 </html>
