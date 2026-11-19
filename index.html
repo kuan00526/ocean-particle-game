@@ -24,7 +24,6 @@ button.on{background:var(--btn-on)}
 #stats .bar{height:8px;border-radius:4px;background:#ffffff14;overflow:hidden}
 #stats .bar i{display:block;height:100%;border-radius:4px}
 #stats .n{text-align:right;opacity:.9}
-#stats .st{margin-top:6px;font-size:11px;opacity:.6}
 #msg{position:absolute;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);text-align:center;font-size:clamp(15px,2.6vw,20px);padding:0 12px;z-index:2;pointer-events:none}
 </style>
 </head>
@@ -49,33 +48,26 @@ let state='GUESSING',view='GAME';
 let pathPts=[],nearPt=null,animT0=0,frameN=0,guess=null,pEnd=null,rounds=0,total=0,lastPct=0;
 let ftleCv=document.createElement('canvas'),ftleMin=0,ftleMax=1,ftleGrid=null;
 
-/* 互動次數與符合度級距（全站共用）：顯示值 = SEED（初始 803）+ 雲端計數器。
-   每送出一次有效預測，就對該級距的雲端計數器 +1（Abacus 免註冊計數 API）；每 30 秒重新讀取，看到其他玩家的次數。 */
-const SEED=[11,131,172,379,86,21,3];   // 100% | 99–95 | 94–90 | 89–80 | 79–70 | 69–50 | 49以下
+/* 互動次數與符合度級距（只計此裝置）：顯示值 = SEED（初始 811）+ 這個裝置累積的次數，存在瀏覽器 localStorage。
+   每次粒子跑完，對應級距 +1。清除瀏覽器資料或換裝置／瀏覽器，就會回到 SEED。 */
+const SEED=[11,132,175,383,86,21,3];   // 100% | 99–95 | 94–90 | 89–80 | 79–70 | 69–50 | 49以下
 const TIER_COL=['#7dff9b','#a6f06a','#d9ea6a','#ffe08a','#ffbd6b','#ff9a6b','#ff6b6b'];
 const TIER_LB=['100%','99–95%','94–90%','89–80%','79–70%','69–50%'];
-const STAT_T={zh:{title:'符合度級距',total:'總互動次數',lt:'49% 以下',on:'全站即時統計',wait:'連線中…'},en:{title:'Score tiers',total:'Total plays',lt:'≤49%',on:'Live, all players',wait:'Connecting…'}};
-const API='https://abacus.jasoncameron.dev',NS='ocean-particle-game-kuan00526';
-let remote=new Array(7).fill(0),netOK=null,hitIdx=-1,statsOpen=false;
+const STAT_T={zh:{title:'符合度級距',total:'總互動次數',lt:'49% 以下'},en:{title:'Score tiers',total:'Total plays',lt:'≤49%'}};
+const LS_KEY='ocean_plays_v2';
+let mine=new Array(7).fill(0),hitIdx=-1,statsOpen=false;  // mine = 此裝置累積的各級距次數
+try{const a=JSON.parse(localStorage.getItem(LS_KEY));if(Array.isArray(a)&&a.length===7&&a.every(v=>Number.isInteger(v)&&v>=0))mine=a}catch(e){}
 const cntEl=document.getElementById('cnt'),statsEl=document.getElementById('stats');
 const tierOf=p=>p>=100?0:p>=95?1:p>=90?2:p>=80?3:p>=70?4:p>=50?5:6;
-const apiGet=i=>fetch(API+'/get/'+NS+'/t'+i).then(r=>r.ok?r.json():r.status===404?{value:0}:Promise.reject()).then(j=>+j.value||0);  // 計數器還不存在(404)視為 0
-function refreshRemote(){
-  Promise.all([0,1,2,3,4,5,6].map(apiGet)).then(a=>{remote=a.map((v,i)=>Math.max(v,remote[i]));netOK=true;showCount()}).catch(()=>{netOK=false;showCount()});
-}
 function showCount(){
-  const T=STAT_T[lang],tiers=SEED.map((v,i)=>v+remote[i]),tot=tiers.reduce((a,b)=>a+b,0),mx=Math.max(...tiers,1);
+  const T=STAT_T[lang],tiers=SEED.map((v,i)=>v+mine[i]),tot=tiers.reduce((a,b)=>a+b,0),mx=Math.max(...tiers,1);
   cntEl.textContent=T.total+' '+tot+(statsEl.className==='float'?(statsOpen?' ▴':' ▾'):'');
   statsEl.innerHTML='<h4>'+T.title+'</h4><div class="tot">'+T.total+'：'+tot+'</div>'+
-    tiers.map((n,i)=>'<div class="row'+(i===hitIdx?' hit':'')+'"><span>'+(i<6?TIER_LB[i]:T.lt)+'</span><span class="bar"><i style="width:'+(n/mx*100)+'%;background:'+TIER_COL[i]+'"></i></span><span class="n">'+n+'</span></div>').join('')+
-    '<div class="st">'+(netOK===null?T.wait:netOK?T.on:'')+'</div>';
+    tiers.map((n,i)=>'<div class="row'+(i===hitIdx?' hit':'')+'"><span>'+(i<6?TIER_LB[i]:T.lt)+'</span><span class="bar"><i style="width:'+(n/mx*100)+'%;background:'+TIER_COL[i]+'"></i></span><span class="n">'+n+'</span></div>').join('');
 }
 let pendingTier=-1;  // 這次預測的級距，等粒子移動結束後才計入並標記
 function flushTier(){if(pendingTier>=0){const i=pendingTier;pendingTier=-1;bumpCount(i)}}
-function bumpCount(i){
-  remote[i]++;hitIdx=i;showCount();  // 先在畫面上 +1，再通知雲端
-  fetch(API+'/hit/'+NS+'/t'+i).then(r=>r.ok?r.json():Promise.reject()).then(j=>{remote[i]=Math.max(remote[i],+j.value||0);netOK=true;showCount()}).catch(()=>{netOK=false;showCount()});
-}
+function bumpCount(i){mine[i]++;hitIdx=i;try{localStorage.setItem(LS_KEY,JSON.stringify(mine))}catch(e){}showCount()}
 function positionStats(){  // 左側空白夠寬就固定在左邊；太窄（手機直立）改成點右上角數字展開
   const dock=offX>=250;
   statsEl.className=dock?'dock':'float';
@@ -367,7 +359,7 @@ function applyLang(){
 }
 bL.onclick=()=>{lang=lang==='zh'?'en':'zh';applyLang()};
 let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{layout();initLevel()},250)});
-layout();initLevel();showCount();refreshRemote();setInterval(refreshRemote,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshRemote()});draw();
+layout();initLevel();showCount();draw();
 </script>
 </body>
 </html>
