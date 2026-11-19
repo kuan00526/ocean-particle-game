@@ -54,7 +54,7 @@ let ftleCv=document.createElement('canvas'),ftleMin=0,ftleMax=1,ftleGrid=null;
 const SEED=[11,131,172,379,86,21,3];   // 100% | 99–95 | 94–90 | 89–80 | 79–70 | 69–50 | 49以下
 const TIER_COL=['#7dff9b','#a6f06a','#d9ea6a','#ffe08a','#ffbd6b','#ff9a6b','#ff6b6b'];
 const TIER_LB=['100%','99–95%','94–90%','89–80%','79–70%','69–50%'];
-const STAT_T={zh:{title:'符合度級距',total:'總互動次數',lt:'49% 以下',on:'全站即時統計',off:'離線：目前只顯示本機數字',wait:'連線中…'},en:{title:'Score tiers',total:'Total plays',lt:'≤49%',on:'Live, all players',off:'Offline: local numbers only',wait:'Connecting…'}};
+const STAT_T={zh:{title:'符合度級距',total:'總互動次數',lt:'49% 以下',on:'全站即時統計',wait:'連線中…'},en:{title:'Score tiers',total:'Total plays',lt:'≤49%',on:'Live, all players',wait:'Connecting…'}};
 const API='https://abacus.jasoncameron.dev',NS='ocean-particle-game-kuan00526';
 let remote=new Array(7).fill(0),netOK=null,hitIdx=-1,statsOpen=false;
 const cntEl=document.getElementById('cnt'),statsEl=document.getElementById('stats');
@@ -68,8 +68,10 @@ function showCount(){
   cntEl.textContent=T.total+' '+tot+(statsEl.className==='float'?(statsOpen?' ▴':' ▾'):'');
   statsEl.innerHTML='<h4>'+T.title+'</h4><div class="tot">'+T.total+'：'+tot+'</div>'+
     tiers.map((n,i)=>'<div class="row'+(i===hitIdx?' hit':'')+'"><span>'+(i<6?TIER_LB[i]:T.lt)+'</span><span class="bar"><i style="width:'+(n/mx*100)+'%;background:'+TIER_COL[i]+'"></i></span><span class="n">'+n+'</span></div>').join('')+
-    '<div class="st">'+(netOK===null?T.wait:netOK?T.on:T.off)+'</div>';
+    '<div class="st">'+(netOK===null?T.wait:netOK?T.on:'')+'</div>';
 }
+let pendingTier=-1;  // 這次預測的級距，等粒子移動結束後才計入並標記
+function flushTier(){if(pendingTier>=0){const i=pendingTier;pendingTier=-1;bumpCount(i)}}
 function bumpCount(i){
   remote[i]++;hitIdx=i;showCount();  // 先在畫面上 +1，再通知雲端
   fetch(API+'/hit/'+NS+'/t'+i).then(r=>r.ok?r.json():Promise.reject()).then(j=>{remote[i]=Math.max(remote[i],+j.value||0);netOK=true;showCount()}).catch(()=>{netOK=false;showCount()});
@@ -253,6 +255,7 @@ function pathStats(sx,sy){
   return {end:[x,y],net,ok,hi,clean:hi<=HI_MAX,score:(ok?1e6:0)+(hi<=HI_MAX?5e5:0)-hi*100+net};
 }
 function initLevel(){
+  flushTier();
   VM=1;MAX_STEPS=480;
   randomizeFlow();genFTLE();
   state='GUESSING';simP=[];simT=0;view='GAME';syncBtns();
@@ -329,6 +332,7 @@ function drawPredict(){
   mark(s,'rgba(40,160,80,.95)',tr('mS'));
 }
 function endMsg(){
+  flushTier();
   if(!guess)return;
   const km=Math.round(Math.hypot(guess[0]-nearPt[0],guess[1]-nearPt[1])/gridSize*SPAN*100);
   say('result',lastPct>=70?'#7dff9b':lastPct>=40?'#ffe08a':'#ff8a8a',lastPct,km);
@@ -344,7 +348,7 @@ function pick(x,y){
     let d=1e9;nearPt=pathPts[0];  // 與整條漂流路徑（線段）的最近距離
     for(let k=1;k<pathPts.length;k++){const A=pathPts[k-1],B=pathPts[k],dx=B[0]-A[0],dy=B[1]-A[1],L2=dx*dx+dy*dy;let t=L2?((x-A[0])*dx+(y-A[1])*dy)/L2:0;t=Math.max(0,Math.min(1,t));const qx=A[0]+t*dx,qy=A[1]+t*dy,dd=Math.hypot(x-qx,y-qy);if(dd<d){d=dd;nearPt=[qx,qy]}}
     const dkm=d/gridSize*SPAN*100;lastPct=Math.round((P=>{for(let i=1;i<P.length;i++)if(dkm<=P[i][0])return P[i-1][1]+(P[i][1]-P[i-1][1])*(dkm-P[i-1][0])/(P[i][0]-P[i-1][0]);return 15})([[0,100],[15,95],[30,90],[100,85],[200,80],[700,30],[1500,15]]));  // 分段線性：距離km→符合度%
-    state='ANIMATING';simT=0;view='GAME';syncBtns();bumpCount(tierOf(lastPct));
+    state='ANIMATING';simT=0;view='GAME';syncBtns();pendingTier=tierOf(lastPct);
     const s=targets[targetIndex];simP=[[s[0],s[1]]];say('drifting');return;
   }
 }
