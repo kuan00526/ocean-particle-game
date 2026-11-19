@@ -14,6 +14,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 #bar{position:absolute;left:0;right:0;top:env(safe-area-inset-top,0px);display:flex;gap:8px;justify-content:center;padding:10px;flex-wrap:wrap;z-index:2}
 button{background:var(--btn);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:9px 14px;font:inherit;font-size:14px;cursor:pointer}
 button.on{background:var(--btn-on)}
+#cnt{position:absolute;right:12px;top:calc(env(safe-area-inset-top,0px) + 58px);font-size:13px;opacity:.75;z-index:2;pointer-events:none;text-align:right}
 #msg{position:absolute;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);text-align:center;font-size:clamp(15px,2.6vw,20px);padding:0 12px;z-index:2;pointer-events:none}
 </style>
 </head>
@@ -25,6 +26,7 @@ button.on{background:var(--btn-on)}
   <button id="bNew">新關卡</button>
   <button id="bLang">EN</button>
 </div>
+<div id="cnt"></div>
 <div id="msg"></div>
 <script>
 const cv=document.getElementById('c'),ctx=cv.getContext('2d'),msgEl=document.getElementById('msg');
@@ -35,6 +37,15 @@ let targets=[],finals=[],targetIndex=0,simP=[],simT=0;
 let state='GUESSING',view='GAME';
 let pathPts=[],nearPt=null,animT0=0,frameN=0,guess=null,pEnd=null,rounds=0,total=0,lastPct=0;
 let ftleCv=document.createElement('canvas'),ftleMin=0,ftleMax=1,ftleGrid=null;
+
+/* 互動次數：從 COUNT_BASE 起算，每送出一次有效的落點預測 +1。
+   ※ 目前只存在「這個瀏覽器」的 localStorage，不是所有玩家的總數；要全站總數需另接後端（如 GoatCounter）。 */
+const COUNT_BASE=803;
+let plays=COUNT_BASE;
+try{const v=parseInt(localStorage.getItem('ocean_plays'),10);if(v>=COUNT_BASE)plays=v}catch(e){}
+const cntEl=document.getElementById('cnt');
+function showCount(){cntEl.textContent=(lang==='zh'?'互動次數 ':'Plays ')+plays}
+function bumpCount(){plays++;try{localStorage.setItem('ocean_plays',plays)}catch(e){}showCount()}
 
 const rnd=Math.random;
 /* 地圖範圍：東經118.2–128.2°、北緯19.8–29.8°（正方形）。LAND=coasts.mat 簡化後的海岸多邊形；FLD=ASCAT Ekman流 2025-08-12（缺值已補），單位 mm/s */
@@ -296,7 +307,7 @@ function pick(x,y){
     let d=1e9;nearPt=pathPts[0];  // 與整條漂流路徑（線段）的最近距離
     for(let k=1;k<pathPts.length;k++){const A=pathPts[k-1],B=pathPts[k],dx=B[0]-A[0],dy=B[1]-A[1],L2=dx*dx+dy*dy;let t=L2?((x-A[0])*dx+(y-A[1])*dy)/L2:0;t=Math.max(0,Math.min(1,t));const qx=A[0]+t*dx,qy=A[1]+t*dy,dd=Math.hypot(x-qx,y-qy);if(dd<d){d=dd;nearPt=[qx,qy]}}
     const dkm=d/gridSize*SPAN*100;lastPct=Math.round((P=>{for(let i=1;i<P.length;i++)if(dkm<=P[i][0])return P[i-1][1]+(P[i][1]-P[i-1][1])*(dkm-P[i-1][0])/(P[i][0]-P[i-1][0]);return 15})([[0,100],[15,95],[30,90],[100,85],[200,80],[700,30],[1500,15]]));  // 分段線性：距離km→符合度%
-    state='ANIMATING';simT=0;view='GAME';syncBtns();
+    state='ANIMATING';simT=0;view='GAME';syncBtns();bumpCount();
     const s=targets[targetIndex];simP=[[s[0],s[1]]];say('drifting');return;
   }
 }
@@ -310,12 +321,12 @@ const bL=document.getElementById('bLang'),bN=document.getElementById('bNew');
 bN.onclick=()=>initLevel();
 function applyLang(){
   document.documentElement.lang=lang==='zh'?'zh-Hant':'en';document.title=tr('title');
-  bG.textContent=tr('game');bF.textContent=tr('ftle');bN.textContent=tr('newL');bL.textContent=tr('langBtn');syncBtns();
+  bG.textContent=tr('game');bF.textContent=tr('ftle');bN.textContent=tr('newL');bL.textContent=tr('langBtn');syncBtns();showCount();
   if(curSay)say(curSay[0],curSay[1],...curSay[2]);
 }
 bL.onclick=()=>{lang=lang==='zh'?'en':'zh';applyLang()};
 let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{layout();initLevel()},250)});
-layout();initLevel();draw();
+layout();initLevel();showCount();draw();
 </script>
 </body>
 </html>
